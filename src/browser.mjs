@@ -1,3 +1,4 @@
+import { matchesResolvedPlace } from './live-identity.mjs';
 import { spawn } from 'node:child_process';
 import { createHash, randomBytes } from 'node:crypto';
 import { access, mkdir, readFile, writeFile } from 'node:fs/promises';
@@ -6,6 +7,9 @@ import path from 'node:path';
 import { assertSafeDedicatedProfile, sleep } from './util.mjs';
 
 const KNOWN_BROWSERS = [
+  '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome',
+  '/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge',
+  '/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser',
   'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
   'C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe',
   'C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe',
@@ -403,7 +407,14 @@ export class BrowserSession {
     if (result.errorText) throw new Error(`ページを開けません: ${result.errorText}`);
     await loaded;
     await sleep(this.shortDelayMs);
-    return this.detectBlocker();
+    for (let attempt = 0; attempt < 20; attempt += 1) {
+      const blocker = await this.detectBlocker();
+      if (blocker.blocked) return blocker;
+      const ready = await this.evaluate(`Boolean(document.querySelector('button[jsaction*="pane.placeActions.save"], button[aria-label^="保存"], button[aria-label^="Save"], [data-testid="save-menu-button"]'))`);
+      if (ready || this.localOnlyNetwork) return blocker;
+      await sleep(500);
+    }
+    return { blocked: true, reason: 'page_readiness_timeout' };
   }
 
   async detectBlocker() {
@@ -418,18 +429,28 @@ export class BrowserSession {
     })()`);
   }
 
-  async verifyAccount(expectedEmail) {
+  async verifyAccount(expectedEmail, { mock = false } = {}) {
     const result = await this.evaluate(`(() => {
-      const found = new Set();
-      for (const el of document.querySelectorAll('[aria-label], [data-email]')) {
-        const text = [el.getAttribute('aria-label'), el.getAttribute('data-email')].filter(Boolean).join(' ');
-        for (const match of text.matchAll(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}/gi)) found.add(match[0].toLowerCase());
-      }
-      return [...found];
+      const mock = ${Boolean(mock)};
+      if (mock && !['127.0.0.1', 'localhost'].includes(location.hostname)) return [];
+      if (!mock && (location.protocol !== 'https:' || !/^(?:www\\.|maps\\.)?google\\.(?:com|[a-z]{2}|(?:com|co)\\.[a-z]{2})$/.test(location.hostname))) return [];
+      const visible = el => {
+        if (!el?.isConnected || !el.getClientRects().length) return false;
+        for (let node = el; node; node = node.parentElement) {
+          const style = getComputedStyle(node);
+          if (node.hidden || node.getAttribute('aria-hidden') === 'true' || style.display === 'none' || /hidden|collapse/.test(style.visibility) || Number(style.opacity) === 0) return false;
+        }
+        return true;
+      };
+      const nodes = [...document.querySelectorAll('a[aria-label],button[aria-label]')]
+        .filter(visible).filter(el => /^(Google Account|Google アカウント)\\s*[:：]/.test(el.getAttribute('aria-label') || ''));
+      if (nodes.length !== 1) return [];
+      const text = nodes[0].getAttribute('aria-label');
+      return [...String(text).matchAll(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\\.[A-Z]{2,}/gi)].map(m => m[0].toLowerCase());
     })()`);
     const expected = expectedEmail.toLowerCase();
-    if (!result.includes(expected)) {
-      throw new Error(`ACCOUNT_MISMATCH: 画面から対象アカウントを本人確認できません (検出=${result.length})`);
+    if (result.length !== 1 || result[0] !== expected) {
+      throw new Error('ACCOUNT_MISMATCH: アクティブなGoogleアカウントの表示を一意に確認できません');
     }
     return { verified: true, email: expected };
   }
@@ -449,24 +470,7 @@ export class BrowserSession {
       return { verified: mockValue === value, reason: mockValue === value ? null : 'mock_identity_mismatch' };
     }
 
-    if (url.protocol !== 'https:' || !/^(?:www\.|maps\.)?google\.(?:com|[a-z]{2}|(?:com|co)\.[a-z]{2})$/i.test(url.hostname)) {
-      return { verified: false, reason: 'final_host_not_google_maps' };
-    }
-    const evidenceUrl = new URL(url);
-    for (const key of ['query_place_id', 'place_id', 'cid', 'ludocid', 'ftid', 'query']) evidenceUrl.searchParams.delete(key);
-    let material = `${evidenceUrl.pathname}${evidenceUrl.search}${evidenceUrl.hash}`;
-    try { material = decodeURIComponent(material); } catch {}
-    let verified = false;
-    if (record.identityKind === 'place_id' || record.identityKind === 'ftid' || record.identityKind === 'maps_data_id') {
-      verified = material.includes(value);
-    } else if (record.identityKind === 'cid') {
-      try {
-        const hex = BigInt(value).toString(16);
-        verified = material.toLowerCase().includes(`:0x${hex}`) || material.includes(value);
-      } catch { verified = false; }
-    } else if (record.identityKind === 'coordinate_pin') {
-      verified = material.includes(value);
-    }
+    const verified = matchesResolvedPlace(record, href);
     return { verified, reason: verified ? null : 'final_page_identity_not_confirmed' };
   }
 
@@ -516,7 +520,7 @@ export class BrowserSession {
       };
       const expectedRootLabel = '\u30ea\u30b9\u30c8\u306b\u4fdd\u5b58';
       const roots = [...document.querySelectorAll('[role="menu"][aria-label]')]
-        .filter((el) => visible(el) && norm(el.getAttribute('aria-label')) === expectedRootLabel);
+        .filter((el) => visible(el) && [expectedRootLabel, 'Save to list', 'Save to lists'].includes(norm(el.getAttribute('aria-label'))));
       if (roots.length !== 1) return {ok:false, reason:'save_menu_root_count', count:roots.length};
       const candidates = [...roots[0].querySelectorAll('[role="menuitemradio"], [role="menuitemcheckbox"], [data-testid="save-list-row"], [role="option"]')].filter(visible);
       const matches = candidates.filter((el) => {
@@ -548,7 +552,7 @@ export class BrowserSession {
       };
       const expectedRootLabel = '\u30ea\u30b9\u30c8\u306b\u4fdd\u5b58';
       const roots = [...document.querySelectorAll('[role="menu"][aria-label]')]
-        .filter((el) => visible(el) && norm(el.getAttribute('aria-label')) === expectedRootLabel);
+        .filter((el) => visible(el) && [expectedRootLabel, 'Save to list', 'Save to lists'].includes(norm(el.getAttribute('aria-label'))));
       if (roots.length !== 1) return {ok:false, reason:'save_menu_root_count', count:roots.length};
       const root = roots[0];
       const candidates = [...root.querySelectorAll('[role="menuitemradio"], [role="menuitemcheckbox"], [data-testid="save-list-row"], [role="option"]')].filter(visible);
@@ -585,11 +589,30 @@ export class BrowserSession {
         return {key, label, labels, checked, known, globalTop, globalLeft};
       });
       const maxScrollTop = scroller ? Math.max(0, scroller.scrollHeight - scroller.clientHeight) : 0;
+      const footer = [...root.querySelectorAll('button, [role="menuitem"], [role="button"]')]
+        .filter(visible).filter(el => ['New list', '新しいリスト', '新しいリストを作成'].includes(norm(el.innerText)));
+      const allRows = [...root.querySelectorAll('[role="menuitemradio"], [role="menuitemcheckbox"], [data-testid="save-list-row"], [role="option"]')];
+      const clipped = [root, ...root.querySelectorAll('*')].some(el => {
+        const style = getComputedStyle(el);
+        return /hidden|clip|auto|scroll/.test(style.overflowY) && el.scrollHeight > el.clientHeight + 1;
+      });
+      const rootRect = root.getBoundingClientRect();
+      let ancestorClipped = rootRect.top < 0 || rootRect.left < 0 || rootRect.bottom > innerHeight || rootRect.right > innerWidth;
+      for (let node = root.parentElement; node; node = node.parentElement) {
+        const style = getComputedStyle(node), rect = node.getBoundingClientRect();
+        if (/hidden|clip|auto|scroll/.test(style.overflowY) && (rootRect.top < rect.top || rootRect.bottom > rect.bottom)) ancestorClipped = true;
+        if (/hidden|clip|auto|scroll/.test(style.overflowX) && (rootRect.left < rect.left || rootRect.right > rect.right)) ancestorClipped = true;
+      }
+      const finiteMenu = !ancestorClipped && !root.matches('[aria-busy="true"]') && !scroller && footer.length === 1 && allRows.length === candidates.length &&
+        candidates.length > 0 && !root.querySelector('[aria-busy="true"], [role="progressbar"]') && !clipped &&
+        candidates.every(el => el.getBoundingClientRect().bottom <= footer[0].getBoundingClientRect().top + 1);
+
       return {
         ok: true,
         wanted,
         rows,
-        coverageHint: document.body?.dataset?.listCoverage || null,
+        coverageHint: ['localhost', '127.0.0.1'].includes(location.hostname) ? (document.body?.dataset?.listCoverage || null) : null,
+        finiteMenu,
         scroll: {
           found: Boolean(scroller),
           top: scroller?.scrollTop || 0,
@@ -615,7 +638,7 @@ export class BrowserSession {
       };
       const expectedRootLabel = '\u30ea\u30b9\u30c8\u306b\u4fdd\u5b58';
       const roots = [...document.querySelectorAll('[role="menu"][aria-label]')]
-        .filter((el) => visible(el) && norm(el.getAttribute('aria-label')) === expectedRootLabel);
+        .filter((el) => visible(el) && [expectedRootLabel, 'Save to list', 'Save to lists'].includes(norm(el.getAttribute('aria-label'))));
       if (roots.length !== 1) return {ok:false, reason:'save_menu_root_count', count:roots.length};
       const root = roots[0];
       const candidates = [...root.querySelectorAll('[role="menuitemradio"], [role="menuitemcheckbox"], [data-testid="save-list-row"], [role="option"]')].filter(visible);
@@ -666,11 +689,12 @@ export class BrowserSession {
         observed.set(row.key, row);
       }
 
-      // A non-scrollable viewport is not, by itself, proof that the complete
-      // list is present. The mock may provide an explicit positive hint; the
-      // live adapter has no such hint and must therefore fail closed.
+      // Require stable finite-menu evidence or scan the entire scroll range.
+      // A non-scrollable viewport alone is not enough.
       if (!snapshot.scroll.found) {
-        if (snapshot.coverageHint === 'complete') {
+        if (snapshot.finiteMenu) await sleep(Math.max(250, this.shortDelayMs));
+        const stable = snapshot.finiteMenu ? await this.inspectListViewport(targetList) : null;
+        if (snapshot.coverageHint === 'complete' || (snapshot.finiteMenu && stable?.finiteMenu && JSON.stringify(snapshot.rows) === JSON.stringify(stable.rows))) {
           sawStart = true;
           sawEnd = true;
         } else {
@@ -751,7 +775,7 @@ export class BrowserSession {
       };
       const expectedRootLabel = '\u30ea\u30b9\u30c8\u306b\u4fdd\u5b58';
       const roots = [...document.querySelectorAll('[role="menu"][aria-label]')]
-        .filter((el) => visible(el) && norm(el.getAttribute('aria-label')) === expectedRootLabel);
+        .filter((el) => visible(el) && [expectedRootLabel, 'Save to list', 'Save to lists'].includes(norm(el.getAttribute('aria-label'))));
       if (roots.length !== 1) return {ok:false, reason:'save_menu_root_count', count:roots.length};
       const candidates = [...roots[0].querySelectorAll('[role="menuitemradio"], [role="menuitemcheckbox"], [data-testid="save-list-row"], [role="option"]')].filter(visible);
       const rows = candidates.map((row) => {
@@ -785,7 +809,7 @@ export class BrowserSession {
       };
       const expectedRootLabel = '\u30ea\u30b9\u30c8\u306b\u4fdd\u5b58';
       const roots = [...document.querySelectorAll('[role="menu"][aria-label]')]
-        .filter((el) => visible(el) && norm(el.getAttribute('aria-label')) === expectedRootLabel);
+        .filter((el) => visible(el) && [expectedRootLabel, 'Save to list', 'Save to lists'].includes(norm(el.getAttribute('aria-label'))));
       if (roots.length !== 1) return {ok:false, reason:'save_menu_root_count', count:roots.length};
       const candidates = [...roots[0].querySelectorAll('[role="menuitemradio"], [role="menuitemcheckbox"], [data-testid="save-list-row"], [role="option"]')].filter(visible);
       const matches = candidates.filter((el) => [el.getAttribute('data-list-name'), el.getAttribute('aria-label'), ...(el.innerText || '').split(/\\r?\\n/)].map(norm).includes(wanted));

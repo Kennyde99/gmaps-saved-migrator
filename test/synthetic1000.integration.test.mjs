@@ -19,7 +19,7 @@ async function processPending({ records, journalFile, profilePath, server, stopA
     for (const record of pending) {
       const blocker = await browser.navigate(rewriteForMock(record.navigationUrl, server.baseUrl, record.identity));
       assert.equal(blocker.blocked, false);
-      await browser.verifyAccount('synthetic@example.test');
+      await browser.verifyAccount('synthetic@example.test', { mock: true });
       assert.equal((await browser.verifyPlaceIdentity(record, { mock: true })).verified, true);
       const result = await browser.saveToList(TARGET_LIST);
       assert.ok(['saved_verified', 'already_saved_verified'].includes(result.status));
@@ -33,7 +33,7 @@ async function processPending({ records, journalFile, profilePath, server, stopA
         baselineCheckedRows: result.baselineCheckedRows ?? []
       });
       await browser.navigate(rewriteForMock(record.navigationUrl, server.baseUrl, record.identity));
-      await browser.verifyAccount('synthetic@example.test');
+      await browser.verifyAccount('synthetic@example.test', { mock: true });
       assert.equal((await browser.verifyPlaceIdentity(record, { mock: true })).verified, true);
       const postState = await browser.verifySaved(TARGET_LIST, result.baselineCheckedRows ?? result.baselineCheckedLists ?? [], { requireCompleteCoverage: true });
       assert.equal(postState.verified, true);

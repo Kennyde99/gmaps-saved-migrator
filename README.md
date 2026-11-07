@@ -1,46 +1,87 @@
-# Google Maps 保存スポット移行補助（試験版）
+# Google Maps 保存場所を別アカウントへコピー
 
-**この版で実Google Mapsへの保存・移行はできません。入力の正規化と、保存しない試行（dry-run）を行う開発途中のツールです。**
+**v0.2.0 live-pilot：自分の Takeout データを読み、移行先の通常 Google Maps 画面で実際に「保存」を押す経路を追加しました。ダミーデータ専用ではありません。**
 
-preview10-candidate の処理コードを収録しています。実 Google 向け `run --execute` / `verify --execute` は `LIVE_DISABLED_UNVERIFIED_UI` で停止します。実画面の保存先判定を検証できていないため、安全ゲートを解除しないでください。公開・ダウンロード可能になっても、本番移行可能になった意味ではありません。
+ただし **実 Google アカウントでの一連の動作は未検証です**。初回は最大2件、画面上のアカウント・場所・保存先を確認できた場合だけ実行し、別ページへ移動した後に再読込して保存を確認します。Google UIが対応形状でない場合は保存せず停止します。動作保証済みの完成版・公式APIによる直接移行ではありません。
 
-## ダウンロードと前提
+## できることとできないこと
 
-GitHub の **Code → Download ZIP** でダウンロードして展開してください。Node.js 22.15 以上が必要です。追加 npm パッケージ、API キー、課金は不要です。Windows の PowerShell、macOS/Linux の端末で、展開したフォルダーへ移動して実行します。
+- 旧アカウントから **Google Takeoutを本人が取得** → ローカルでCSV/GeoJSONを正規化 → 新アカウントへ本人が専用ブラウザーでログイン → 新しい非公開リストへ場所を追加。
+- 元のアカウント・保存場所を削除しない「コピー」です。パスワードやCookieを.envへ入力する方式ではありません。
+- 同一入力・移行先アカウント・リストに処理履歴を固定。既に保存済みの場所は解除せず、保存直後だけでなく別ナビゲーションで確認。最初の2件の承認後も1回25件です。
+- **取得元のオンライン直接読出し、リスト分類/メモ/ラベル/写真の自動転記、短縮URLの自動解決は未対応**。複数リストを入力すると一つの移行専用リストへ統合されます。リストごとに移したい場合は入力と `GMAPS_STATE` と保存先リストを分けます。
+- APIキーを登録しても個人の保存リストに書き込めません。公開Places APIは検索/場所情報用です。
+- CAPTCHA、403/429、ログイン拒否、想定外UIでは停止。再試行の連打、非公開API、認証回避、ガード解除はしません。
 
-## まず合成2件だけで試す
+## ダウンロード
 
-Google のアカウントや実データを使わず試せます。`state` に同名の出力がすでにあると上書きせず停止するので、初回用の新しいフォルダーで実行してください。
+このページの **Code → Download ZIP** でダウンロードして展開。Node.js **22.15以上**と通常版Chrome/Edgeが必要です。APIキー・追加npmパッケージ・課金は不要です。PowerShellで展開先へ移動します。
 
-```sh
-node --version
+## 1. 実データを用意
+
+1. 移行元アカウントの本人が [Google Takeout](https://takeout.google.com/) へログインします。
+2. 保存リストに対応する「保存済み / Saved」と、必要なら「マップ（マイプレイス）」を選択。項目名や形式はアカウントにより異なります。
+3. ZIPを取得・展開し、移したいリストのCSVを選びます。Takeout未出力の場所は取得できていないものとして残します。
+4. 実データはGitHubへアップロードしません。[対応形式](docs/FORMAT_NOTES.md)も確認してください。
+
+## 2. 後からアカウントを設定（PowerShell）
+
+以下は識別用メールであり認証情報ではありません。**パスワード・認証コード・Cookie・トークンをコードや環境変数へ保存しないでください。** アカウントの所有者が、各ブラウザー画面でログインします。
+
+```powershell
+$env:GMAPS_SOURCE_ACCOUNT = "old@example.com"
+$env:GMAPS_TARGET_ACCOUNT = "new@example.com"
+$env:GMAPS_TARGET_LIST = "GMAPS-MIGRATION-2026"
+$env:GMAPS_INPUT = "C:\path\to\Takeout\Saved\your-list.csv"
+$env:GMAPS_STATE = "state/transfer"
+$env:GMAPS_PROFILE = "private/target-profile"
+# 自動検出されない時だけ設定
+# $env:GMAPS_BROWSER = "C:\Program Files\Google\Chrome\Application\chrome.exe"
+```
+
+macOS/Linuxでは `$env:NAME = "value"` の代わりに `export NAME="value"` と設定し、入力パスを変更します。`.env` ファイルは自動読込しません。Nodeの `--env-file` を使う場合もパスワードは記載しないでください。
+
+## 3. まず実データ2件
+
+```powershell
 npm run test:offline
-node src/cli.mjs normalize --input samples/synthetic-2.csv --output state/normalized.jsonl --report state/normalize-report.json
-node src/cli.mjs run --input state/normalized.jsonl --journal state/journal.jsonl
+npm run transfer -- prepare
+npm run transfer -- login
+npm run transfer -- pilot
+npm run transfer -- verify
 ```
 
-最後の結果で `noBrowserStarted: true` と `noGoogleRequestSent: true` を確認します。これは保存件数の成功確認ではなく、入力の試験です。
+- `prepare` は移行元の確認を求めます。元アカウントとのオンライン照合ではなく本人確認です。`state/transfer/normalize-report.json` の要確認・除外・重複を読んでください。
+- `login` で開く専用ブラウザーに **新アカウントだけ**でログインし、保存先名と同じ **非公開の新規リスト**を作成。本人の画面上で確認してから端末に戻りEnterを押します。ログインを拒否されたら停止します。通常ChromeのCookieをコピーしないでください。
+- `pilot` は対象アカウントとリスト名を入力確認してから、実データの最初の最大2件を保存します。全一覧のチェック状態が読めない、場所IDが正確に一致しない場合は停止します。
+- `verify` は初回試行の実保存を再確認します。対象外の既存リストが保持されていることも確認します。
+- 新アカウントのGoogle Mapsで実際にその2件が入ったことを本人が確認します。`savedVerified` が0、`stopReason`がある、途中終了の場合は完了ではありません。
 
-## 自分の Takeout 出力を確認する場合
+## 4. 2件が確認できた後だけ続行
 
-Google Takeout からの取得は、そのアカウントを操作する権限のある本人が公式画面で行います。ツールがログイン情報を読み取ったり、データをダウンロードしたりすることはありません。
-
-```sh
-node src/cli.mjs normalize --input old-export --output state/my-normalized.jsonl --report state/my-normalize-report.json
-node src/cli.mjs run --input state/my-normalized.jsonl --journal state/my-journal.jsonl
+```powershell
+npm run transfer -- approve
+npm run transfer -- batch
+npm run transfer -- status
 ```
 
-CSV / GeoJSON の対応範囲は [形式の注意点](docs/FORMAT_NOTES.md) を参照してください。短縮 URL、名称だけの場所、曖昧な ID は自動対象にせず、要確認として残します。GeoJSON を Starred places と確認できる場合のみ `--geojson-kind starred` が使えます。レビューなど別種のデータを指定しないでください。
+`approve` は実保存2件の本人確認を求めます。`batch` は残りから最大25件を追加し、毎回再読込を行います。正常終了後に同じ `batch` を繰り返せます。`status` はローカル履歴の集計で、新しいGoogle照合ではありません。
 
-`normalize-report.json` の件数、重複、要確認の理由を自分で照合してください。元ファイルは変更・削除しません。実エクスポート、生成した state、専用ブラウザープロファイル、Cookie、認証情報、個人の保存スポットは GitHub や他人へアップロードしないでください。
+- 中断したら **stateと専用profileを消さずに**保持してください。不確定な保存は次回に実画面で確認してから処理します。
+- 入力/アカウント/保存先を変える場合は別 `GMAPS_STATE` を使います。別アカウントには別 `GMAPS_PROFILE`。
+- `prepare` / `verify` / `approve` は既存ファイルを上書きしません。再検証が必要なら低水準CLIで新しい検証ファイルを指定するか、元ファイルをバックアップした上で確認します。安易に履歴を消してやり直さないでください。
+- 全件完了は `remaining: 0` だけで判断せず、正規化段階の `manualReview` / 除外も照合。要確認は勝手に移行した扱いにしません。
 
-## 収録と検証範囲
+## 検証範囲・既知の限界
 
-- `src/`: ローカルの正規化、重複判定、再開履歴、安全ガード、開発用ブラウザーアダプターと模擬サーバー。
-- `samples/`: 架空の場所だけの合成 CSV（2件 / 1000件）。実在アカウント・個人の保存スポットは含めません。
-- `test/`: 合成データとスタブによる検証。公開準備時のオフライン試験は 148 / 148 成功。
-- `npm test` はブラウザーを起動する開発用試験です。今回再実行していません。通常利用では上記 `test:offline` だけを使ってください。
-- 実 Google 保存、Windows/macOS 実機での今回の再検証は未実施です。
-- `login` は専用プロファイルへ本人が手動ログインする開発向けコマンドで、保存・移行機能ではありません。dry-run のためには不要です。
+オフライン試験155件が成功。合成データで正規化・スコープ固定・再開・二重保存防止・実行同意・2件制限・アカウント誤一致防止・場所IDの厳密比較をテストしています。今回の環境ではChromium起動がローカルソケット制限で失敗し、ブラウザー結合試験は完走できていません。**合成試験の合格はGoogle実画面の動作保証ではありません**。日本語/英語の対応メニュー以外、名前だけの場所、画面URLで同一場所を確証できないIDは停止します。Chrome更新やGoogleのUI変更で停止することがあります。
 
-この公開パッケージには過去の Git 履歴や作業用の個人情報を含めず、ソース・合成試験・一般的な手順だけを収録しています。MIT License。Google の公式製品ではありません。
+`src/cli.mjs` の低水準実行は `run --execute --live` が必要です。既定はdry-run、実行同意を環境変数で自動付与しません。元のエクスポート、認証情報、実データは公開しないでください。`.gitignore` は `.env`、`state/`、`private/`、`old-export/` を除外します。
+
+## 公式根拠（2026-11-07確認）
+
+- [場所をリストに保存する手順](https://support.google.com/maps/answer/7280933?co=GENIE.Platform%3DDesktop&hl=ja)：通常UIの保存・非公開/共有設定。
+- [保存済み場所](https://support.google.com/maps/answer/3184808?co=GENIE.Platform%3DDesktop&hl=ja)：リスト上限3,000件。約1,000件でも小分けで確認してください。
+- [Places APIメソッド一覧](https://developers.google.com/maps/documentation/places/web-service/reference/rest)：個人の保存リストへの書込APIではありません。
+
+本ツールのUI自動化がGoogle公式に認定されているという意味ではありません。利用時はGoogleの規約と画面指示に従ってください。MIT License。

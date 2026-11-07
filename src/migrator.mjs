@@ -6,10 +6,9 @@ import { launchDedicatedBrowser } from './browser.mjs';
 import { rewriteForMock } from './mock-server.mjs';
 import { atomicWriteJson, cleanEmail, jitteredSleep, redactEmail, sha256 } from './util.mjs';
 
-// The adapter has only been validated against the local mock. Keep live Google
-// execution hard-disabled in the distributed build until a separately reviewed
-// real-UI selector pack exists.
-export const LIVE_GOOGLE_UI_ENABLED = false;
+// Live execution is explicit opt-in and runtime fail-closed. Real-account end-to-end
+// operation is not release-tested: account/list/place evidence is required each time.
+export const LIVE_GOOGLE_UI_ENABLED = true;
 
 export function planHash(records) {
   return sha256(records.map((record) => JSON.stringify(record)).join('\n'));
@@ -199,18 +198,20 @@ export async function runMigration({
   targetList,
   dedicatedListConfirm,
   approvalFile,
-  pilot = 5,
+  pilot = 2,
   batchSize = 25,
   delayMs = 8000,
   jitterMs = 3000,
   mockBaseUrl,
-  headless = false
+  headless = false,
+  live = false
 }) {
   const account = assertHumanConfirmation(expectedAccount, confirmAccount, targetList, dedicatedListConfirm);
   assertMockBaseUrl(mockBaseUrl);
   assertRateLimit(mockBaseUrl, delayMs, jitterMs);
   assertSeparatedPaths({ profilePath, files: { journalFile, stateFile, reportFile, approvalFile } });
-  if (!mockBaseUrl && !LIVE_GOOGLE_UI_ENABLED) throw new Error('LIVE_DISABLED_UNVERIFIED_UI: 配布版はGoogle実画面操作を無効化しています');
+  if (!mockBaseUrl && !live) throw new Error('LIVE_OPT_IN_REQUIRED: 実保存には --live と --execute を指定してください');
+  if (!mockBaseUrl && !approvalFile && (pilot < 1 || pilot > 2)) throw new Error('LIVE_PILOT_LIMIT: 最初は1〜2件だけ実行してください');
   if (headless && !mockBaseUrl) throw new Error('実アカウント操作は可視ブラウザーでのみ実行できます');
   await assertOutputDoesNotExist(reportFile, '実行レポート');
   const binding = { planHash: planHash(records), verifiedAccount: account, targetList };
@@ -257,7 +258,7 @@ export async function runMigration({
     // A partially successful pilot may retry only the identities that already
     // failed. It must not advance into fresh records before approval.
     phase = 'pilot_retry';
-    const remainingPilotCapacity = 10 - completedBefore.length;
+    const remainingPilotCapacity = (mockBaseUrl ? 10 : 2) - completedBefore.length;
     if (remainingPilotCapacity < 1) {
       throw new Error('pilotの検証済み件数が上限に達しているため、失敗分を自動再試行できません');
     }
@@ -296,7 +297,7 @@ export async function runMigration({
         break;
       }
       try {
-        await browser.verifyAccount(account);
+        await browser.verifyAccount(account, { mock: Boolean(mockBaseUrl) });
       } catch (error) {
         stopReason = error.message;
         await appendBoundResult(journalFile, scope, { type: 'result', identity: record.identity, status: 'failed', reason: error.message, ...baselineFields, phase });
@@ -360,7 +361,7 @@ export async function runMigration({
           await appendBoundResult(journalFile, scope, { type: 'result', identity: record.identity, status: 'indeterminate_after_click', reason: stopReason, ...journalBaselineFields(baselineCheckedRows), phase });
           break;
         }
-        try { await browser.verifyAccount(account); }
+        try { await browser.verifyAccount(account, { mock: Boolean(mockBaseUrl) }); }
         catch (error) {
           stopReason = error.message;
           await appendBoundResult(journalFile, scope, { type: 'result', identity: record.identity, status: 'indeterminate_after_click', reason: stopReason, ...journalBaselineFields(baselineCheckedRows), phase });
@@ -419,12 +420,12 @@ export async function runMigration({
   return report;
 }
 
-export async function verifyMigration({ records, journalFile, stateFile, output, profilePath, browserPath, expectedAccount, confirmAccount, targetList, dedicatedListConfirm, mockBaseUrl, headless = false, delayMs = 8000, jitterMs = 3000 }) {
+export async function verifyMigration({ records, journalFile, stateFile, output, profilePath, browserPath, expectedAccount, confirmAccount, targetList, dedicatedListConfirm, mockBaseUrl, headless = false, delayMs = 8000, jitterMs = 3000, live = false }) {
   assertSeparatedPaths({ profilePath, files: { journalFile, stateFile, output } });
   const account = assertHumanConfirmation(expectedAccount, confirmAccount, targetList, dedicatedListConfirm);
   assertMockBaseUrl(mockBaseUrl);
   assertRateLimit(mockBaseUrl, delayMs, jitterMs);
-  if (!mockBaseUrl && !LIVE_GOOGLE_UI_ENABLED) throw new Error('LIVE_DISABLED_UNVERIFIED_UI: 配布版はGoogle実画面操作を無効化しています');
+  if (!mockBaseUrl && !live) throw new Error('LIVE_OPT_IN_REQUIRED: 実保存には --live と --execute を指定してください');
   if (headless && !mockBaseUrl) throw new Error('実アカウント操作は可視ブラウザーでのみ実行できます');
   await assertOutputDoesNotExist(output, '検証レポート');
   const boundOptions = { journalFile, stateFile, binding: { planHash: planHash(records), verifiedAccount: account, targetList } };
@@ -443,7 +444,7 @@ export async function verifyMigration({ records, journalFile, stateFile, output,
       const navigationUrl = mockBaseUrl ? rewriteForMock(record.navigationUrl, mockBaseUrl, record.identity) : record.navigationUrl;
       const blocker = await browser.navigate(navigationUrl);
       if (blocker.blocked) { stopReason = blocker.reason; break; }
-      try { await browser.verifyAccount(account); }
+      try { await browser.verifyAccount(account, { mock: Boolean(mockBaseUrl) }); }
       catch (error) { stopReason = error.message; break; }
       const identityCheck = await browser.verifyPlaceIdentity(record, { mock: Boolean(mockBaseUrl) });
       if (!identityCheck.verified) { stopReason = `PLACE_IDENTITY_MISMATCH:${identityCheck.reason}`; break; }

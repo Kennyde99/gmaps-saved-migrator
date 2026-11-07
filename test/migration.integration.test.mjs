@@ -263,7 +263,7 @@ test('preflight rejects standard lists, existing reports, and live Google before
   try {
     await assert.rejects(() => runMigration({ ...base, mockBaseUrl: server.baseUrl, targetList: 'Favorites', dedicatedListConfirm: 'Favorites' }));
     await assert.rejects(() => runMigration({ ...base, mockBaseUrl: server.baseUrl, targetList: 'Favoritos', dedicatedListConfirm: 'Favoritos' }));
-    await assert.rejects(() => runMigration({ ...base, headless: false, delayMs: 8000, jitterMs: 3000 }), /LIVE_DISABLED_UNVERIFIED_UI/);
+    await assert.rejects(() => runMigration({ ...base, headless: false, delayMs: 8000, jitterMs: 3000 }), /LIVE_OPT_IN_REQUIRED/);
     const collision = path.join(dir, 'state-and-report.json');
     await assert.rejects(
       () => runMigration({ ...base, mockBaseUrl: server.baseUrl, stateFile: collision, reportFile: collision }),

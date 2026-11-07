@@ -15,7 +15,7 @@ test('local mock: preserves existing save, verifies after click, and is crash-sa
   const browser = await launchDedicatedBrowser({ profilePath: path.join(profile, 'dedicated'), headless: true });
   try {
     await browser.navigate(rewriteForMock(urlFor('PRE_SAVED'), server.baseUrl));
-    await browser.verifyAccount('pilot@example.test');
+    await browser.verifyAccount('pilot@example.test', { mock: true });
     assert.equal((await browser.saveToList('移行先')).status, 'already_saved_verified');
 
     await browser.navigate(rewriteForMock(urlFor('NEW_PLACE'), server.baseUrl));
@@ -136,7 +136,7 @@ test('local mock: 429 and account mismatch stop safely', { timeout: 60000 }, asy
     await browser.navigate(`${server.baseUrl}/fault/ui`);
     await assert.rejects(() => browser.saveToList('移行先'), /UI_MISMATCH/);
     await browser.navigate(rewriteForMock(urlFor('A'), server.baseUrl));
-    await assert.rejects(() => browser.verifyAccount('wrong@example.test'), /ACCOUNT_MISMATCH/);
+    await assert.rejects(() => browser.verifyAccount('wrong@example.test', { mock: true }), /ACCOUNT_MISMATCH/);
     assert.equal((await browser.verifyPlaceIdentity({ identity: 'place_id:B', identityKind: 'place_id' }, { mock: true })).verified, false);
     assert.deepEqual(browser.networkAudit(), { mode: 'localhost_only', externalAttempts: [], blockedExternalRequests: [] });
   } finally {

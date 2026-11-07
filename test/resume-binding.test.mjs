@@ -253,11 +253,11 @@ test('CLI forwards optional dry-run scope and requires state for verify/approve-
   }
 });
 
-test('live Google gate remains hard-disabled, with no initialization or browser side effect', async () => {
-  assert.equal(LIVE_GOOGLE_UI_ENABLED, false);
+test('live Google requires explicit opt-in, with no initialization or browser side effect', async () => {
+  assert.equal(LIVE_GOOGLE_UI_ENABLED, true);
   const o = await options(); const before = launches;
   for (const action of [runMigration, verifyMigration]) {
-    await assert.rejects(() => action({ ...o, mockBaseUrl: undefined, headless: false, delayMs: 8000, jitterMs: 3000 }), /LIVE_DISABLED_UNVERIFIED_UI/);
+    await assert.rejects(() => action({ ...o, mockBaseUrl: undefined, headless: false, delayMs: 8000, jitterMs: 3000 }), /LIVE_OPT_IN_REQUIRED/);
   }
   assert.equal(launches, before); assert.equal(await textOrMissing(o.stateFile), null); assert.equal(await textOrMissing(o.journalFile), null);
 });
@@ -285,4 +285,18 @@ test('journal changes during verification cannot produce a reusable verification
     await assert.rejects(() => verifyMigration(o), /JOURNAL_CHANGED_DURING_VERIFY/);
     assert.equal(await textOrMissing(o.output), null);
   } finally { fakeBrowser = null; }
+});
+
+test('live pilot explicitly opts in, writes at most 2 and still revisits before success', async () => {
+ const o = await options(); fakeBrowser = memoryBrowser();
+ try {
+  const r = await runMigration({...o, mockBaseUrl:undefined, live:true, headless:false, delayMs:3000, jitterMs:0});
+  assert.equal(r.processedThisRun,2); assert.equal(r.savedVerified,2); assert.equal(fakeBrowser.calls.save.length,2);
+ } finally { fakeBrowser=null; }
+});
+test('live opt-in cannot bypass 2-place pilot or visible browser', async () => {
+ const o=await options(); const count=launches;
+ await assert.rejects(()=>runMigration({...o,mockBaseUrl:undefined,live:true,headless:false,pilot:3,delayMs:3000,jitterMs:0}),/LIVE_PILOT_LIMIT/);
+ await assert.rejects(()=>runMigration({...o,mockBaseUrl:undefined,live:true,headless:true,delayMs:3000,jitterMs:0}),/可視ブラウザー/);
+ assert.equal(launches,count);
 });

@@ -6,10 +6,11 @@ import { asInt, cleanEmail, parseArgs } from './util.mjs';
 import { createPilotApproval, dryRunPlan, runMigration, verifyMigration } from './migrator.mjs';
 import { generateSyntheticCsv } from './synthetic.mjs';
 import { launchDedicatedBrowser } from './browser.mjs';
+import { applyEnvironment } from './config.mjs';
 import { startMockServer } from './mock-server.mjs';
 
 function usage() {
-  return `Google Maps 保存スポット移行補助（dry-run 既定・実Google保存は現在無効）
+  return `Google Maps 保存スポット移行補助（dry-run 既定・実保存は --execute --live）
 
   normalize --input <CSV|GeoJSON|dir> --output state/normalized.jsonl --report state/normalize-report.json
   run --input state/normalized.jsonl --journal state/journal.jsonl
@@ -24,7 +25,8 @@ function usage() {
   verify / approve-pilot も --state と --journal の同じ組を指定します。
   state/account/listなしのdry-runは履歴成功を採用しません。
   login は本人が専用profileへ手動ログインするだけです。
-  実Googleの run/verify は LIVE_DISABLED_UNVERIFIED_UI で停止します。
+  実Googleの run/verify は --execute --live が必要です。最初は --pilot 2。
+  実アカウントでのリリース検証は未実施。確認不一致時は停止します。
 `;
 }
 
@@ -45,7 +47,8 @@ function executionOptions(args) {
     targetList: required(args, 'target-list'),
     dedicatedListConfirm: required(args, 'dedicated-list-confirm'),
     approvalFile: args.approval,
-    pilot: asInt(args.pilot, 5, { min: 1, max: 10 }),
+    live: Boolean(args.live),
+    pilot: asInt(args.pilot, 2, { min: 1, max: 10 }),
     batchSize: asInt(args['batch-size'], 25, { min: 1, max: 50 }),
     delayMs: asInt(args['delay-ms'], 8000, { min: 0, max: 600000 }),
     jitterMs: asInt(args['jitter-ms'], 3000, { min: 0, max: 600000 }),
@@ -56,7 +59,7 @@ function executionOptions(args) {
 
 async function main() {
   const [command, ...rest] = process.argv.slice(2);
-  const args = parseArgs(rest);
+  const args = applyEnvironment(parseArgs(rest));
   if (!command || command === 'help' || args.help) { console.log(usage()); return; }
 
   if (command === 'normalize') {
@@ -92,6 +95,7 @@ async function main() {
       targetList: required(args, 'target-list'),
       dedicatedListConfirm: required(args, 'dedicated-list-confirm'),
       mockBaseUrl: args['mock-base-url'],
+      live: Boolean(args.live),
       headless: Boolean(args.headless),
       delayMs: asInt(args['delay-ms'], 8000, { min: 0, max: 600000 }),
       jitterMs: asInt(args['jitter-ms'], 3000, { min: 0, max: 600000 })

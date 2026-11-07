@@ -1,6 +1,6 @@
 {
   "name": "gmaps-saved-migrator",
-  "version": "0.1.0-preview10-candidate",
+  "version": "0.2.0-live-pilot",
   "private": true,
   "type": "module",
   "description": "本人操作を前提に Google Maps 保存スポット移行を補助する安全重視のローカルツール",
@@ -8,7 +8,8 @@
     "test": "node --test --test-concurrency=1",
     "generate-sample": "node src/cli.mjs generate-sample --out samples/synthetic-1000.csv --count 1000",
     "mock": "node src/cli.mjs mock-server",
-    "test:offline": "node --test --test-concurrency=1 test/journal.test.mjs test/normalize.test.mjs test/resume-binding.test.mjs test/coordinate-integrity.test.mjs test/csv-integrity.test.mjs test/url-alias-integrity.test.mjs test/single-url-identity.test.mjs"
+    "test:offline": "node --test --test-concurrency=1 test/journal.test.mjs test/normalize.test.mjs test/resume-binding.test.mjs test/coordinate-integrity.test.mjs test/csv-integrity.test.mjs test/url-alias-integrity.test.mjs test/single-url-identity.test.mjs test/live.test.mjs",
+    "transfer": "node src/transfer.mjs"
   },
   "engines": {
     "node": ">=22"
