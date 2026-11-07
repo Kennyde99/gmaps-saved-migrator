@@ -1,0 +1,7 @@
+state/
+private/
+old-export/
+*.log
+.env
+.env.*
+node_modules/
