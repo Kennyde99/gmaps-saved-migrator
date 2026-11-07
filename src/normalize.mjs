@@ -299,7 +299,12 @@ function geoJsonRecords(document, sourceFile, options) {
 async function listInputFiles(input) {
   const absolute = path.resolve(input);
   const info = await stat(absolute);
-  if (info.isFile()) return [absolute];
+  if (info.isFile()) {
+    if (/\.html?$/i.test(absolute)) throw new Error('TAKEOUT_INDEX_NOT_DATA: archive_browser.htmlは案内ページです。このツールはHTML入力に未対応です。ZIPをすべて展開し、Saved / 保存済み内の対象リストCSVを指定してください。HTMLの拡張子を変更しないでください。');
+    if (/\.(zip|tgz|tar|gz)$/i.test(absolute)) throw new Error('TAKEOUT_EXTRACT_REQUIRED: アーカイブをすべて展開してから、Saved / 保存済み内の対象リストCSVを指定してください。');
+    if (!/\.(csv|json|geojson)$/i.test(absolute)) throw new Error('UNSUPPORTED_INPUT_FILE: 対象リストのCSV / JSON / GeoJSONを指定してください');
+    return [absolute];
+  }
   const entries = await readdir(absolute, { withFileTypes: true });
   const nested = await Promise.all(entries.map(async (entry) => {
     const child = path.join(absolute, entry.name);
@@ -311,7 +316,7 @@ async function listInputFiles(input) {
 
 export async function normalizeInputs({ input, output, report, allowCoordinatePins = false, geoJsonKind }) {
   const files = await listInputFiles(input);
-  if (files.length === 0) throw new Error('CSV / JSON / GeoJSON が見つかりません');
+  if (files.length === 0) throw new Error('TAKEOUT_DATA_NOT_FOUND: CSV / JSON / GeoJSON が見つかりません。ZIPの全展開と未取得の分割ZIPを確認してください。HTMLしかない場合は移行元アカウントのTakeoutで Saved / 保存済み が選ばれているか確認してください');
   const records = [];
   const errors = [];
   for (const filename of files) {
